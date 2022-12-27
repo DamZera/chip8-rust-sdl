@@ -6,35 +6,324 @@ use std::fs;
 use sdl2::pixels::Color;
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const SCREEN_HEIGHT: u32 = 544; // 32*17
+const SCREEN_WIDTH: u32 = 1088; // 64*17
+
+const SPRITE_0: u16 = 0x1001;
+const SPRITE_1: u16 = 0x1002;
+const SPRITE_2: u16 = 0x1003;
+const SPRITE_3: u16 = 0x1004;
+const SPRITE_A: u16 = 0x1005;
+const SPRITE_B: u16 = 0x1006;
+const SPRITE_C: u16 = 0x1007;
+const SPRITE_D: u16 = 0x1008;
+
+const sprite_0: [u8; 5] = [
+    0b01100000,
+    0b10010000,
+    0b10010000,
+    0b10010000,
+    0b01100000
+];
+
+const sprite_1: [u8; 5] = [
+    0b01100000,
+    0b00100000,
+    0b00100000,
+    0b00100000,
+    0b01110000
+];
+
+const sprite_2: [u8; 5] = [
+    0b11100000,
+    0b00010000,
+    0b00100000,
+    0b01000000,
+    0b1111000
+];
+
+const sprite_3: [u8; 5] = [
+    0b11000011,
+    0b01100110,
+    0b00111100,
+    0b01100110,
+    0b10000001
+];
+
+const sprite_a: [u8; 5] = [
+    0b11000011,
+    0b01100110,
+    0b00111100,
+    0b01100110,
+    0b10000001
+];
+
+const sprite_b: [u8; 5] = [
+    0b11000011,
+    0b01100110,
+    0b00111100,
+    0b01100110,
+    0b10000001
+];
+
+const sprite_c: [u8; 5] = [
+    0b11000011,
+    0b01100110,
+    0b00111100,
+    0b01100110,
+    0b10000001
+];
+
+const sprite_d: [u8; 5] = [
+    0b11000011,
+    0b01100110,
+    0b00111100,
+    0b01100110,
+    0b10000001
+];
+
+#[derive(Debug)]
+struct Chip8 {
+    // define registers
+    v: [u8; 16],
+    mem: [u8; 0x1000],
+    stack: [usize; 16],
+
+    pc: usize,
+    sp: usize, // stack position
+    reg_i: u16,
+    timer_delay: u8,
+}
+
+fn build_default_chip8() -> Chip8 {
+    Chip8 {
+        // define registers
+        v: [0, 0, 0, 0, 0, 0, 0, 0, 0 ,0 ,0 ,0, 0, 0, 0, 0],
+        mem: [0; 0x1000],
+        stack: [0, 0, 0, 0, 0, 0, 0, 0, 0 ,0 ,0 ,0, 0, 0, 0, 0],
+
+        pc: 0x200,
+        sp: 0, // stack position
+        reg_i: 0,
+        timer_delay: 0,
+    }
+}
+
+impl Chip8 {
+    fn execute_command(&mut self) -> bool {
+        let opcode : u16 = (self.mem[self.pc] as u16)<<(4*2) | self.mem[self.pc+1] as u16;
+        print!("[{:04x}] {:04x} ", self.pc, opcode); // issue in addr
+        let nnn = opcode & 0xfff;
+        let nn  = opcode & 0xff;
+        let n   = opcode & 0xf;
+        let vx: usize = ((opcode>>(4*2)) & 0xf) as usize;
+        let vy: usize  = ((opcode>>4) & 0xf) as usize;
+
+        match opcode>>(4*3) {
+            0x0 => {
+                if opcode == 0x00ee {
+                    println!("RET");
+                    self.sp -= 1;
+                    self.pc = self.stack[self.sp];
+                    return false;
+                }
+                else if opcode == 0x00e0 {
+                    println!("CLR_DSP");
+                }
+                else {
+                    println!("ERROR 0")
+                }
+            }
+            0x1 => {
+                println!("JMP {:04x}", nnn);
+                self.pc = nnn as usize;
+                return false;
+            }
+            0x2 => {
+                println!("CALL {:04x}", nnn);
+                self.stack[self.sp] = self.pc + 2;
+                self.sp += 1;
+                self.pc = nnn as usize;
+                return false;
+            }
+            0x3 => {
+                println!("SKIP if V{} == {:#02x}", vx, nn);
+                if u16::from(self.v[vx]) == nn {
+                    self.pc += 2;
+                }
+            }
+            0x4 => {
+                println!("SKIP if V{} != {:#02x}", vx, nn);
+                if u16::from(self.v[vx]) != nn {
+                    self.pc += 2;
+                }
+            }
+            0x5 => {
+                println!("SKIP if V{} == V{}", vx, vy);
+                if self.v[vx] == self.v[vy] {
+                    self.pc += 2;
+                }
+            }
+            0x6 => {
+                println!("SET V{} = {:#02x}", vx, nn);
+                self.v[vx] = (nn) as u8;
+            }
+            0x7 => {
+                println!("ADD V{} += {:#02x}", vx, nn);
+                match self.v[vx].checked_add((nn) as u8) {
+                    Some(val) => {
+                        self.v[vx] = val;
+                    }
+                    None => {
+                        self.v[vx] = 0;
+                        println!("overflow ignore!");
+                    }
+                };
+            }
+            0x8 => {
+                match n {
+                    0x0 => {
+                        println!("SET V{} = V{}", vx, vy);
+                        self.v[vx] = self.v[vy];
+                    }
+                    0x1 => {
+                        println!("V{} |= V{}", vx, vy);
+                        self.v[vx] |= self.v[vy];
+                    }
+                    0x2 => {
+                        println!("V{} &= V{}", vx, vy);
+                        self.v[vx] &= self.v[vy];
+                    }
+                    0x3 => {
+                        println!("V{} ^= V{}", vx, vy);
+                        self.v[vx] ^= self.v[vy];
+                    }
+                    0x4 => {
+                        println!("V{} += V{}", vx, vy);
+                        self.v[vx] += self.v[vy];
+                    }
+                    0x5 => {
+                        println!("V{} -= V{}", vx, vy);
+                        self.v[vx] -= self.v[vy];
+                    }
+                    0x6 => {
+                        println!("V{} >>= 1", vx);
+                        self.v[vx] >>=1
+                    }
+                    0x7 => {
+                        println!("V{} = V{} - V{}", vx, vy, vx);
+                        self.v[vx] = self.v[vy] - self.v[vx];
+                    }
+                    0xe => {
+                        println!("V{} <<= 1", vx);
+                        self.v[vx] <<=1;
+                    }
+                    _ => println!("ERROR 8"),
+                }
+            }
+            0x9 => {
+                println!("SKIP V{} != V{}", vx, vy);
+                if self.v[vx] != self.v[vy] {
+                    self.pc += 2;
+                }
+            }
+            0xa => {
+                println!("SET I = {}", nnn);
+                self.reg_i = nnn;
+            }
+            0xb => {
+                println!("PC = V0 + {}", nnn);
+                self.pc = (self.v[0] as u16 + nnn) as usize;
+            }
+            0xc => println!("RAND todo"),
+            0xd => {
+                println!("DRAW (V{}, V{}, {})", vx, vy, n);
+
+            }
+            0xe => {
+                if (nn) == 0x9e {
+                    println!("SKIP if (KEY == V{})", vy);
+                    //panic!("opcode 0xe9e not implemented");
+                }
+                else if (nn) == 0xa1 {
+                    println!("SKIP if (KEY != V{})", vy);
+                    //panic!("opcode 0xea1 not implemented");
+                }
+                else {
+                    println!("ERROR E");
+                }
+            }
+            0xf => {
+                match nn {
+                    0x07 => {
+                        println!("V{} = get_delay() {}", vx, self.timer_delay);
+                        self.v[vx] = self.timer_delay;
+                    }
+                    0x0a => {
+                        println!("V{} = get_key()", vx);
+                        // TODO
+                    }
+                    0x15 => {
+                        println!("delay_timer(V{} = {})", vx, self.v[vx]);
+                        self.timer_delay = self.v[vx];
+                    }
+                    0x18 => println!("SOUND !!"),
+                    0x1e => {
+                        println!("I += V{}", vx);
+                        self.reg_i += self.v[vx] as u16;
+                    }
+                    0x29 => {
+                        println!("I = sprite_addr[V{}]", vx);
+                        // TODO implement this part
+                        println!("TODO : sprite {}", self.v[vx]);
+                        self.reg_i = SPRITE_D;
+                    }
+                    0x33 => println!("set_BCD(V{})*(I+0) = BCD(3);*(I+1) = BCD(2);*(I+2) = BCD(1);", vx),
+                    0x55 => println!("reg_dump(V{}, &I)", vx),
+                    0x65 => println!("reg_dump(V{}, &I)", vx),
+                    _ => println!("ERROR F")
+                }
+            }
+            _ => println!("ERROR"),
+        }
+        self.pc += 2;
+        if self.pc + 1 >= self.mem.len(){
+            return true;
+        }
+
+        false
+    }
+}
+
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     let rom_path = &args[1];
     println!("Rom path is {rom_path}");
 
-    // define registers
-    let mut v: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0 ,0 ,0 ,0, 0, 0, 0, 0];
-    let mut mem: [u8; 0x1000] = [0; 0x1000];
-    let mut stack: [usize; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0 ,0 ,0 ,0, 0, 0, 0, 0];
-
-    let mut end = false;
-    let mut pc = 0x200;
-    let mut sp = 0; // stack position
-
     let rom_bytes : Vec<u8> = fs::read(rom_path).expect("Bytes");
+    let mut end = false;
+
+    let mut chip : Chip8 = build_default_chip8();
 
     // store rom in mem
     let mut i = 0x200;
     for byte in rom_bytes {
-        mem[i] = byte;
+        chip.mem[i] = byte;
         i += 1;
     }
+
+    let mut instant = Instant::now();
+    let tick_duration = Duration::from_millis(1000/60);
+
+    //println!("Chip8 data {:?}", chip);
 
     let sdl_context = sdl2::init().unwrap();
     let video_subsystem = sdl_context.video().unwrap();
 
-    let window = video_subsystem.window("rust-sdl2 demo", 800, 600)
+    let window = video_subsystem.window("rust-sdl2 demo", SCREEN_WIDTH, SCREEN_HEIGHT)
         .position_centered()
         .build()
         .unwrap();
@@ -60,170 +349,15 @@ fn main() {
             }
         }
         // The rest of the game loop goes here...
+        end = chip.execute_command();
+        if instant.elapsed() >= tick_duration {
+            if chip.timer_delay > 0 {
+                chip.timer_delay -= 1;
+            }
+            instant = Instant::now();
+        }
 
         canvas.present();
-        ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 60));
-    }
-    // CHIP8
-    while !end {
-        let opcode : u16 = (mem[pc] as u16)<<(4*2) | mem[pc+1] as u16;
-        print!("[{:04x}] {:04x} ", pc, opcode); // issue in addr
-        let nnn = opcode & 0xfff;
-        let nn  = opcode & 0xff;
-        let n   = opcode & 0xf;
-        let vx  = (opcode>>(4*2)) & 0xf;
-        let vy  = (opcode>>4) & 0xf;
-
-        match opcode>>(4*3) {
-            0x0 => {
-                if opcode == 0x00ee {
-                    println!("RET");
-                    sp -= 1;
-                    pc = stack[sp];
-                    continue;
-                }
-                else if opcode == 0x00e0 {
-                    println!("CLR_DSP");
-                }
-                else {
-                    println!("ERROR 0")
-                }
-            }
-            0x1 => {
-                println!("JMP {:04x}", nnn);
-                pc = nnn as usize;
-                continue;
-            }
-            0x2 => {
-                println!("CALL {:04x}", nnn);
-                stack[sp] = pc + 2;
-                sp += 1;
-                pc = nnn as usize;
-                continue;
-            }
-            0x3 => {
-                println!("SKIP if V{} == {:#02x}", vx, nn);
-                if u16::from(v[(vx) as usize]) == nn {
-                    pc += 2;
-                }
-            }
-            0x4 => {
-                println!("SKIP if V{} != {:#02x}", vx, nn);
-                if u16::from(v[(vx) as usize]) != nn {
-                    pc += 2;
-                }
-            }
-            0x5 => {
-                println!("SKIP if V{} == V{}", vx, vy);
-                if v[(vx) as usize] == v[(vy) as usize] {
-                    pc += 2;
-                }
-            }
-            0x6 => {
-                println!("SET V{} = {:#02x}", vx, nn);
-                v[(vx) as usize] = (nn) as u8;
-            }
-            0x7 => {
-                println!("ADD V{} += {:#02x}", vx, nn);
-                match v[(vx) as usize].checked_add((nn) as u8) {
-                    Some(val) => {
-                        v[(vx) as usize] = val;
-                    }
-                    None => {
-                        v[(vx) as usize] = 0;
-                        println!("overflow ignore!");
-                    }
-                };
-            }
-            0x8 => {
-                match opcode&0xf {
-                    0x0 => {
-                        println!("SET V{} = V{}", vx, vy);
-                        v[(vx) as usize] = v[(vy) as usize];
-                    }
-                    0x1 => {
-                        println!("V{} |= V{}", vx, vy);
-                        v[(vx) as usize] |= v[(vy) as usize];
-                    }
-                    0x2 => {
-                        println!("V{} &= V{}", vx, vy);
-                        v[(vx) as usize] &= v[(vy) as usize];
-                    }
-                    0x3 => {
-                        println!("V{} ^= V{}", vx, vy);
-                        v[(vx) as usize] ^= v[(vy) as usize];
-                    }
-                    0x4 => {
-                        println!("V{} += V{}", vx, vy);
-                        v[(vx) as usize] += v[(vy) as usize];
-                    }
-                    0x5 => {
-                        println!("V{} -= V{}", vx, vy);
-                        v[(vx) as usize] -= v[(vy) as usize];
-                    }
-                    0x6 => {
-                        println!("V{} >>= 1", vx);
-                        v[(vx) as usize] >>=1
-                    }
-                    0x7 => {
-                        println!("V{} = V{} - V{}", vx, vy, vx);
-                        v[(vx) as usize] = v[(vy) as usize] - v[(vx) as usize];
-                    }
-                    0xe => {
-                        println!("V{} <<= 1", vx);
-                        v[(vx) as usize] <<=1;
-                    }
-                    _ => println!("ERROR 8"),
-                }
-            }
-            0x9 => {
-                println!("SKIP V{} != V{}", vx, vy);
-                if v[(vx) as usize] != v[(vy) as usize] {
-                    pc += 2;
-                }
-            }
-            0xa => {
-                println!("SET I = {}", nnn);
-                panic!("opcode 0xa not implemented");
-            }
-            0xb => {
-                println!("PC = V0 + {}", nnn);
-                pc = (v[0] as u16 + nnn) as usize;
-            }
-            0xc => println!("RAND todo"),
-            0xd => println!("DRAW (V{}, V{}, {})", vx, vy, n),
-            0xe => {
-                if (opcode&0xff) == 0x9e {
-                    println!("SKIP if (KEY == V{})", vy);
-                    //panic!("opcode 0xe9e not implemented");
-                }
-                else if (opcode&0xff) == 0xa1 {
-                    println!("SKIP if (KEY != V{})", vy);
-                    //panic!("opcode 0xea1 not implemented");
-                }
-                else {
-                    println!("ERROR E");
-                }
-            }
-            0xf => {
-                match opcode&0xff {
-                    0x07 => println!("V{} = get_delay()", vx),
-                    0x0a => println!("V{} = get_key()", vx),
-                    0x15 => println!("delay_timer(V{})", vx),
-                    0x18 => println!("SOUND !!"),
-                    0x1e => println!("I += V{}", vx),
-                    0x29 => println!("I = sprite_addr[V{}]", vx),
-                    0x33 => println!("set_BCD(V{})*(I+0) = BCD(3);*(I+1) = BCD(2);*(I+2) = BCD(1);", vx),
-                    0x55 => println!("reg_dump(V{}, &I)", vx),
-                    0x65 => println!("reg_dump(V{}, &I)", vx),
-                    _ => println!("ERROR F")
-                }
-            }
-            _ => println!("ERROR"),
-        }
-        pc += 2;
-        if pc + 1 >= mem.len(){
-            end = true;
-        }
+        ::std::thread::sleep(tick_duration);
     }
 }
