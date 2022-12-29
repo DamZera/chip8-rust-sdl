@@ -6,7 +6,7 @@ use rand::Rng;
 
 use sdl2::pixels::Color;
 use sdl2::event::Event;
-use sdl2::keyboard::Keycode;
+use sdl2::keyboard::{Keycode, KeyboardState, Scancode};
 use sdl2::rect::Rect;
 
 use std::time::{Duration, Instant};
@@ -16,8 +16,8 @@ const CHIP8_WIDTH: usize = 64;
 
 const SCALE_FACTOR: u32 = 17;
 
-const SCREEN_HEIGHT: u32 = CHIP8_HEIGHT as u32*SCALE_FACTOR; // 32*17
-const SCREEN_WIDTH: u32 = CHIP8_WIDTH as u32*SCALE_FACTOR; // 64*17
+const SCREEN_HEIGHT: u32 = CHIP8_HEIGHT as u32 * SCALE_FACTOR; // 32*17
+const SCREEN_WIDTH: u32 = CHIP8_WIDTH as u32 * SCALE_FACTOR; // 64*17
 
 pub const FONT_SET: [u8; 80] = [
     0xF0,
@@ -104,13 +104,15 @@ pub const FONT_SET: [u8; 80] = [
 
 #[derive(Debug)]
 struct Chip8 {
-    // define registers
+     // define registers, stack, vram and ram
     v: [u8; 16],
     mem: [u8; 0x1000],
     vram: [[u8; CHIP8_WIDTH]; CHIP8_HEIGHT],
     stack: [usize; 16],
 
-    pc: usize,
+    keypad: [u8; 16],
+
+    pc: usize, // pointer counter
     sp: usize, // stack position
     reg_i: u16,
     timer_delay: u8,
@@ -119,14 +121,15 @@ struct Chip8 {
 
 fn build_default_chip8() -> Chip8 {
     let mut chip = Chip8 {
-        // define registers
         v: [0, 0, 0, 0, 0, 0, 0, 0, 0 ,0 ,0 ,0, 0, 0, 0, 0],
         mem: [0; 0x1000],
         vram: [[0; CHIP8_WIDTH]; CHIP8_HEIGHT],
         stack: [0, 0, 0, 0, 0, 0, 0, 0, 0 ,0 ,0 ,0, 0, 0, 0, 0],
 
+        keypad: [0; 16],
+
         pc: 0x200,
-        sp: 0, // stack position
+        sp: 0,
         reg_i: 0,
         timer_delay: 0,
         vram_changed: false,
@@ -142,7 +145,7 @@ fn build_default_chip8() -> Chip8 {
 impl Chip8 {
     fn execute_command(&mut self) -> bool {
         let opcode : u16 = (self.mem[self.pc] as u16)<<(4*2) | self.mem[self.pc+1] as u16;
-        print!("[{:04x}] {:04x} ", self.pc, opcode); // issue in addr
+        print!("[{:04x}] {:04x} ", self.pc, opcode);
         let nnn = opcode & 0xfff;
         let nn  = opcode & 0xff;
         let n   = opcode & 0xf;
@@ -227,12 +230,10 @@ impl Chip8 {
                         self.v[vx] ^= self.v[vy];
                     }
                     0x4 => {
-                        println!("V{} += V{}", vx, vy);
-                        let x = self.v[vx] as u16;
-                        let y = self.v[vy] as u16;
-                        let result = x + y;
-                        self.v[vx] = result as u8;
-                        self.v[0xf] = if result > 0xff { 1 } else { 0 };
+                        println!("V{}({}) += V{}({})", vx, self.v[vx], vy, self.v[vy]);
+                        let reg = (self.v[vx] as u16) + (self.v[vy] as u16);
+                        self.v[vx] = reg as u8;
+                        self.v[0xf] = if reg > 0xff { 1 } else { 0 };
                     }
                     0x5 => {
                         println!("V{}({}) -= V{}({})", vx, self.v[vx], vy, self.v[vy]);
@@ -293,12 +294,16 @@ impl Chip8 {
             }
             0xe => {
                 if (nn) == 0x9e {
-                    println!("SKIP if (KEY == V{})", vy);
-                    //panic!("opcode 0xe9e not implemented");
+                    println!("SKIP if (KEY == V{})", vx);
+                    if self.keypad[self.v[vx] as usize] != 0 {
+                        self.pc += 2;
+                    }
                 }
                 else if (nn) == 0xa1 {
-                    println!("SKIP if (KEY != V{})", vy);
-                    //panic!("opcode 0xea1 not implemented");
+                    println!("SKIP if (KEY != V{})", vx);
+                    if self.keypad[self.v[vx] as usize] != 1 {
+                        self.pc += 2;
+                    }
                 }
                 else {
                     panic!("ERROR unknown OPCODE {}", opcode);
@@ -312,7 +317,12 @@ impl Chip8 {
                     }
                     0x0a => {
                         println!("V{} = get_key()", vx);
-                        // TODO
+                        for i in 0..0xF {
+                            if self.keypad[i] != 0 {
+                                self.v[vx] = i as u8;
+                                break;
+                            }
+                        }
                     }
                     0x15 => {
                         println!("delay_timer(V{} = {})", vx, self.v[vx]);
@@ -329,22 +339,25 @@ impl Chip8 {
                         self.reg_i = (self.v[vx] as u16) * 5;
                     }
                     0x33 => {
-                        println!("set_BCD(V{})*(I+0) = BCD(3);*(I+1) = BCD(2);*(I+2) = BCD(1);", vx);
-                        panic!("ERROR unknown OPCODE {} 0x33", opcode);
+                        println!("set_BCD(V{}:{})*(I+0) = BCD(3);*(I+1) = BCD(2);*(I+2) = BCD(1);", vx, self.v[vx]);
+                        let i = self.reg_i as usize;
+                        self.mem[i] = self.v[vx] / 100;
+                        self.mem[i + 1] = self.v[vx] % 100 / 10;
+                        self.mem[i + 2] = self.v[vx] % 10;
                     }
                     0x55 => {
                         println!("reg_dump(V{}, &I)", vx);
-                        for byte in 0..vx+1 {
-                            self.mem[self.reg_i as usize + byte as usize] = self.v[vx + byte];
+                        for byte in 0..(vx+1) {
+                            self.mem[self.reg_i as usize + byte as usize] = self.v[byte];
                         }
                     }
                     0x65 => {
                         println!("reg_load(V{}, &I)", vx);
-                        for byte in 0..vx+1 {
-                            self.v[vx + byte] = self.mem[self.reg_i as usize + byte as usize];
+                        for byte in 0..(vx+1) {
+                            self.v[byte] = self.mem[self.reg_i as usize + byte as usize];
                         }
                     }
-                    _ => println!("ERROR F")
+                    _ => panic!("ERROR unknown OPCODE {}", opcode)
                 }
             }
             _ => panic!("ERROR unknown OPCODE {}", opcode),
@@ -373,7 +386,6 @@ fn main() {
     println!("Rom path is {rom_path}");
 
     let rom_bytes : Vec<u8> = fs::read(rom_path).expect("Bytes");
-    let mut end = false;
 
     let mut chip : Chip8 = build_default_chip8();
 
@@ -404,17 +416,36 @@ fn main() {
     canvas.present();
 
     'running: loop {
+
         for event in event_pump.poll_iter() {
             match event {
-                Event::Quit {..} |
-                Event::KeyDown { keycode: Some(Keycode::Escape), .. } => {
+                Event::Quit { .. } | Event::KeyDown { keycode: Some(Keycode::Escape), .. } => {
                     break 'running
-                },
-                _ => {}
-            }
+                }
+                _ => {},
+            };
         }
-        // The rest of the game loop goes here...
-        end = chip.execute_command();
+
+        // Keypad is hex values 0-9 A-F
+        let key_state = KeyboardState::new(&mut event_pump);
+        chip.keypad[0x0] = key_state.is_scancode_pressed(Scancode::Num0) as u8;
+        chip.keypad[0x1] = key_state.is_scancode_pressed(Scancode::Num1) as u8;
+        chip.keypad[0x2] = key_state.is_scancode_pressed(Scancode::Num2) as u8;
+        chip.keypad[0x3] = key_state.is_scancode_pressed(Scancode::Num3) as u8;
+        chip.keypad[0x4] = key_state.is_scancode_pressed(Scancode::Num4) as u8;
+        chip.keypad[0x5] = key_state.is_scancode_pressed(Scancode::Num5) as u8;
+        chip.keypad[0x6] = key_state.is_scancode_pressed(Scancode::Num6) as u8;
+        chip.keypad[0x7] = key_state.is_scancode_pressed(Scancode::Num7) as u8;
+        chip.keypad[0x8] = key_state.is_scancode_pressed(Scancode::Num8) as u8;
+        chip.keypad[0x9] = key_state.is_scancode_pressed(Scancode::Num9) as u8;
+        chip.keypad[0xA] = key_state.is_scancode_pressed(Scancode::A) as u8;
+        chip.keypad[0xB] = key_state.is_scancode_pressed(Scancode::B) as u8;
+        chip.keypad[0xC] = key_state.is_scancode_pressed(Scancode::C) as u8;
+        chip.keypad[0xD] = key_state.is_scancode_pressed(Scancode::D) as u8;
+        chip.keypad[0xE] = key_state.is_scancode_pressed(Scancode::E) as u8;
+        chip.keypad[0xF] = key_state.is_scancode_pressed(Scancode::F) as u8;
+
+        chip.execute_command();
 
         if chip.vram_changed {
             for (y, row) in chip.vram.iter().enumerate() {
