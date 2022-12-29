@@ -2,86 +2,104 @@ extern crate sdl2;
 
 use std::env;
 use std::fs;
+use rand::Rng;
 
 use sdl2::pixels::Color;
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
+use sdl2::rect::Rect;
+
 use std::time::{Duration, Instant};
 
-const SCREEN_HEIGHT: u32 = 544; // 32*17
-const SCREEN_WIDTH: u32 = 1088; // 64*17
+const CHIP8_HEIGHT: usize = 32;
+const CHIP8_WIDTH: usize = 64;
 
-const SPRITE_0: u16 = 0x1001;
-const SPRITE_1: u16 = 0x1002;
-const SPRITE_2: u16 = 0x1003;
-const SPRITE_3: u16 = 0x1004;
-const SPRITE_A: u16 = 0x1005;
-const SPRITE_B: u16 = 0x1006;
-const SPRITE_C: u16 = 0x1007;
-const SPRITE_D: u16 = 0x1008;
+const SCALE_FACTOR: u32 = 17;
 
-const sprite_0: [u8; 5] = [
-    0b01100000,
-    0b10010000,
-    0b10010000,
-    0b10010000,
-    0b01100000
-];
+const SCREEN_HEIGHT: u32 = CHIP8_HEIGHT as u32*SCALE_FACTOR; // 32*17
+const SCREEN_WIDTH: u32 = CHIP8_WIDTH as u32*SCALE_FACTOR; // 64*17
 
-const sprite_1: [u8; 5] = [
-    0b01100000,
-    0b00100000,
-    0b00100000,
-    0b00100000,
-    0b01110000
-];
-
-const sprite_2: [u8; 5] = [
-    0b11100000,
-    0b00010000,
-    0b00100000,
-    0b01000000,
-    0b1111000
-];
-
-const sprite_3: [u8; 5] = [
-    0b11000011,
-    0b01100110,
-    0b00111100,
-    0b01100110,
-    0b10000001
-];
-
-const sprite_a: [u8; 5] = [
-    0b11000011,
-    0b01100110,
-    0b00111100,
-    0b01100110,
-    0b10000001
-];
-
-const sprite_b: [u8; 5] = [
-    0b11000011,
-    0b01100110,
-    0b00111100,
-    0b01100110,
-    0b10000001
-];
-
-const sprite_c: [u8; 5] = [
-    0b11000011,
-    0b01100110,
-    0b00111100,
-    0b01100110,
-    0b10000001
-];
-
-const sprite_d: [u8; 5] = [
-    0b11000011,
-    0b01100110,
-    0b00111100,
-    0b01100110,
-    0b10000001
+pub const FONT_SET: [u8; 80] = [
+    0xF0,
+    0x90,
+    0x90,
+    0x90,
+    0xF0,
+    0x20,
+    0x60,
+    0x20,
+    0x20,
+    0x70,
+    0xF0,
+    0x10,
+    0xF0,
+    0x80,
+    0xF0,
+    0xF0,
+    0x10,
+    0xF0,
+    0x10,
+    0xF0,
+    0x90,
+    0x90,
+    0xF0,
+    0x10,
+    0x10,
+    0xF0,
+    0x80,
+    0xF0,
+    0x10,
+    0xF0,
+    0xF0,
+    0x80,
+    0xF0,
+    0x90,
+    0xF0,
+    0xF0,
+    0x10,
+    0x20,
+    0x40,
+    0x40,
+    0xF0,
+    0x90,
+    0xF0,
+    0x90,
+    0xF0,
+    0xF0,
+    0x90,
+    0xF0,
+    0x10,
+    0xF0,
+    0xF0,
+    0x90,
+    0xF0,
+    0x90,
+    0x90,
+    0xE0,
+    0x90,
+    0xE0,
+    0x90,
+    0xE0,
+    0xF0,
+    0x80,
+    0x80,
+    0x80,
+    0xF0,
+    0xE0,
+    0x90,
+    0x90,
+    0x90,
+    0xE0,
+    0xF0,
+    0x80,
+    0xF0,
+    0x80,
+    0xF0,
+    0xF0,
+    0x80,
+    0xF0,
+    0x80,
+    0x80,
 ];
 
 #[derive(Debug)]
@@ -89,26 +107,36 @@ struct Chip8 {
     // define registers
     v: [u8; 16],
     mem: [u8; 0x1000],
+    vram: [[u8; CHIP8_WIDTH]; CHIP8_HEIGHT],
     stack: [usize; 16],
 
     pc: usize,
     sp: usize, // stack position
     reg_i: u16,
     timer_delay: u8,
+    vram_changed: bool,
 }
 
 fn build_default_chip8() -> Chip8 {
-    Chip8 {
+    let mut chip = Chip8 {
         // define registers
         v: [0, 0, 0, 0, 0, 0, 0, 0, 0 ,0 ,0 ,0, 0, 0, 0, 0],
         mem: [0; 0x1000],
+        vram: [[0; CHIP8_WIDTH]; CHIP8_HEIGHT],
         stack: [0, 0, 0, 0, 0, 0, 0, 0, 0 ,0 ,0 ,0, 0, 0, 0, 0],
 
         pc: 0x200,
         sp: 0, // stack position
         reg_i: 0,
         timer_delay: 0,
+        vram_changed: false,
+    };
+
+    for i in 0..FONT_SET.len() {
+        chip.mem[i] = FONT_SET[i];
     }
+
+    chip
 }
 
 impl Chip8 {
@@ -131,6 +159,12 @@ impl Chip8 {
                 }
                 else if opcode == 0x00e0 {
                     println!("CLR_DSP");
+                    for y in 0..CHIP8_HEIGHT {
+                        for x in 0..CHIP8_WIDTH {
+                            self.vram[y][x] = 0;
+                        }
+                    }
+                    self.vram_changed = true;
                 }
                 else {
                     println!("ERROR 0")
@@ -171,16 +205,8 @@ impl Chip8 {
                 self.v[vx] = (nn) as u8;
             }
             0x7 => {
-                println!("ADD V{} += {:#02x}", vx, nn);
-                match self.v[vx].checked_add((nn) as u8) {
-                    Some(val) => {
-                        self.v[vx] = val;
-                    }
-                    None => {
-                        self.v[vx] = 0;
-                        println!("overflow ignore!");
-                    }
-                };
+                println!("ADD V{}({}) += {:#02x}", vx, self.v[vx], nn);
+                self.v[vx] = self.v[vx].checked_add(nn as u8).unwrap_or(((self.v[vx] as u16 + nn ) % 255) as u8);
             }
             0x8 => {
                 match n {
@@ -202,25 +228,33 @@ impl Chip8 {
                     }
                     0x4 => {
                         println!("V{} += V{}", vx, vy);
-                        self.v[vx] += self.v[vy];
+                        let x = self.v[vx] as u16;
+                        let y = self.v[vy] as u16;
+                        let result = x + y;
+                        self.v[vx] = result as u8;
+                        self.v[0xf] = if result > 0xff { 1 } else { 0 };
                     }
                     0x5 => {
-                        println!("V{} -= V{}", vx, vy);
-                        self.v[vx] -= self.v[vy];
+                        println!("V{}({}) -= V{}({})", vx, self.v[vx], vy, self.v[vy]);
+                        self.v[vx] = self.v[vx].checked_sub(self.v[vy]).unwrap_or(255 - self.v[vy]);
+                        self.v[0xf] = if self.v[vx] > self.v[vy] { 1 } else { 0 };
                     }
                     0x6 => {
                         println!("V{} >>= 1", vx);
-                        self.v[vx] >>=1
+                        self.v[vx] >>=1;
+                        self.v[0xf] = self.v[vx] & 1;
                     }
                     0x7 => {
                         println!("V{} = V{} - V{}", vx, vy, vx);
                         self.v[vx] = self.v[vy] - self.v[vx];
+                        self.v[0xf] = if self.v[vy] > self.v[vx] { 1 } else { 0 };
                     }
                     0xe => {
                         println!("V{} <<= 1", vx);
+                        self.v[0xf] = (self.v[vx] & 0b10000000) >> 7;
                         self.v[vx] <<=1;
                     }
-                    _ => println!("ERROR 8"),
+                    _ => panic!("ERROR unknown OPCODE {}", opcode),
                 }
             }
             0x9 => {
@@ -237,10 +271,25 @@ impl Chip8 {
                 println!("PC = V0 + {}", nnn);
                 self.pc = (self.v[0] as u16 + nnn) as usize;
             }
-            0xc => println!("RAND todo"),
+            0xc => {
+                println!("V{} = RAND & NN({})", vx, nn);
+                let mut rng = rand::thread_rng();
+                self.v[vx] = (rng.gen_range(0..256) as u8) & nn as u8;
+            }
             0xd => {
                 println!("DRAW (V{}, V{}, {})", vx, vy, n);
+                self.v[0xf] = 0;
+                for byte in 0..n {
+                    let y = (self.v[vy] as usize + byte as usize) % CHIP8_HEIGHT;
+                    for bit in 0..8 {
+                        let x = (self.v[vx] as usize + bit) % CHIP8_WIDTH;
+                        let color = (self.mem[self.reg_i as usize + byte as usize] >> (7 - bit)) & 1;
+                        self.v[0xf] |= color & self.vram[y][x];
+                        self.vram[y][x] ^= color;
 
+                    }
+                }
+                self.vram_changed = true;
             }
             0xe => {
                 if (nn) == 0x9e {
@@ -252,7 +301,7 @@ impl Chip8 {
                     //panic!("opcode 0xea1 not implemented");
                 }
                 else {
-                    println!("ERROR E");
+                    panic!("ERROR unknown OPCODE {}", opcode);
                 }
             }
             0xf => {
@@ -273,20 +322,32 @@ impl Chip8 {
                     0x1e => {
                         println!("I += V{}", vx);
                         self.reg_i += self.v[vx] as u16;
+                        self.v[0xf] = if self.reg_i > 0xf00 { 1 } else { 0 };
                     }
                     0x29 => {
                         println!("I = sprite_addr[V{}]", vx);
-                        // TODO implement this part
-                        println!("TODO : sprite {}", self.v[vx]);
-                        self.reg_i = SPRITE_D;
+                        self.reg_i = (self.v[vx] as u16) * 5;
                     }
-                    0x33 => println!("set_BCD(V{})*(I+0) = BCD(3);*(I+1) = BCD(2);*(I+2) = BCD(1);", vx),
-                    0x55 => println!("reg_dump(V{}, &I)", vx),
-                    0x65 => println!("reg_dump(V{}, &I)", vx),
+                    0x33 => {
+                        println!("set_BCD(V{})*(I+0) = BCD(3);*(I+1) = BCD(2);*(I+2) = BCD(1);", vx);
+                        panic!("ERROR unknown OPCODE {} 0x33", opcode);
+                    }
+                    0x55 => {
+                        println!("reg_dump(V{}, &I)", vx);
+                        for byte in 0..vx+1 {
+                            self.mem[self.reg_i as usize + byte as usize] = self.v[vx + byte];
+                        }
+                    }
+                    0x65 => {
+                        println!("reg_load(V{}, &I)", vx);
+                        for byte in 0..vx+1 {
+                            self.v[vx + byte] = self.mem[self.reg_i as usize + byte as usize];
+                        }
+                    }
                     _ => println!("ERROR F")
                 }
             }
-            _ => println!("ERROR"),
+            _ => panic!("ERROR unknown OPCODE {}", opcode),
         }
         self.pc += 2;
         if self.pc + 1 >= self.mem.len(){
@@ -294,6 +355,14 @@ impl Chip8 {
         }
 
         false
+    }
+}
+
+fn color(value: u8) -> Color {
+    if value == 0 {
+        Color::RGB(0, 0, 0)
+    } else {
+        Color::RGB(255, 255, 255)
     }
 }
 
@@ -329,16 +398,12 @@ fn main() {
         .unwrap();
 
     let mut canvas = window.into_canvas().build().unwrap();
-
-    canvas.set_draw_color(Color::RGB(0, 255, 255));
+    let mut event_pump = sdl_context.event_pump().unwrap();
+    canvas.set_draw_color(Color::RGB(0, 0, 0));
     canvas.clear();
     canvas.present();
-    let mut event_pump = sdl_context.event_pump().unwrap();
-    let mut i = 0;
+
     'running: loop {
-        i = (i + 1) % 255;
-        canvas.set_draw_color(Color::RGB(i, 64, 255 - i));
-        canvas.clear();
         for event in event_pump.poll_iter() {
             match event {
                 Event::Quit {..} |
@@ -350,6 +415,22 @@ fn main() {
         }
         // The rest of the game loop goes here...
         end = chip.execute_command();
+
+        if chip.vram_changed {
+            for (y, row) in chip.vram.iter().enumerate() {
+                for (x, &col) in row.iter().enumerate() {
+                    let x = (x as u32) * SCALE_FACTOR;
+                    let y = (y as u32) * SCALE_FACTOR;
+    
+                    canvas.set_draw_color(color(col));
+                    let _ = canvas
+                        .fill_rect(Rect::new(x as i32, y as i32, SCALE_FACTOR, SCALE_FACTOR));
+                }
+            }
+            canvas.present();
+            chip.vram_changed = false;
+        }
+
         if instant.elapsed() >= tick_duration {
             if chip.timer_delay > 0 {
                 chip.timer_delay -= 1;
@@ -357,7 +438,6 @@ fn main() {
             instant = Instant::now();
         }
 
-        canvas.present();
-        ::std::thread::sleep(tick_duration);
+        ::std::thread::sleep_ms(2);
     }
 }
