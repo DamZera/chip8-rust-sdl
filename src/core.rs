@@ -124,7 +124,7 @@ impl Chip8 {
             }
             0x7 => {
                 println!("ADD V{}({}) += {:#02x}", vx, self.v[vx], nn);
-                self.v[vx] = self.v[vx].checked_add(nn as u8).unwrap_or(((self.v[vx] as u16 + nn ) % 255) as u8);
+                self.v[vx] = self.v[vx].wrapping_add(nn as u8);
             }
             0x8 => {
                 match n {
@@ -152,18 +152,18 @@ impl Chip8 {
                     }
                     0x5 => {
                         println!("V{}({}) -= V{}({})", vx, self.v[vx], vy, self.v[vy]);
-                        self.v[vx] = self.v[vx].checked_sub(self.v[vy]).unwrap_or(255 - self.v[vy]);
-                        self.v[0xf] = if self.v[vx] > self.v[vy] { 1 } else { 0 };
+                        self.v[0xf] = if self.v[vy] > self.v[vx] { 0 } else { 1 };
+                        self.v[vx] = self.v[vx].wrapping_sub(self.v[vy]);
                     }
                     0x6 => {
                         println!("V{} >>= 1", vx);
-                        self.v[vx] >>=1;
                         self.v[0xf] = self.v[vx] & 1;
+                        self.v[vx] >>=1;
                     }
                     0x7 => {
                         println!("V{} = V{} - V{}", vx, vy, vx);
-                        self.v[vx] = self.v[vy] - self.v[vx];
                         self.v[0xf] = if self.v[vy] > self.v[vx] { 1 } else { 0 };
+                        self.v[vx] = self.v[vy] - self.v[vx];
                     }
                     0xe => {
                         println!("V{} <<= 1", vx);
@@ -283,5 +283,59 @@ impl Chip8 {
         }
 
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup() ->  Chip8 {
+        build_default_chip8()
+    }
+
+    fn add_cmd(chip: &mut Chip8, opcode: u16, addr: usize) {
+        chip.mem[addr+1] = (opcode & 0xff) as u8;
+        chip.mem[addr] = (opcode >> (4*2)) as u8;
+    }
+
+    #[test]
+    fn test_vx_add_vy() {
+        let mut chip = setup();
+
+        // V[0xc] = 0x03
+        add_cmd(&mut chip, 0x6c03, 0x200);
+        chip.execute_command();
+        assert_eq!(chip.v[0xc], 0x3);
+
+        // V[0xa] = 0xff
+        add_cmd(&mut chip, 0x6aff, 0x202);
+        chip.execute_command();
+        assert_eq!(chip.v[0xa], 0xff);
+
+        // V[0xa] + V[0xc] = 0x2
+        add_cmd(&mut chip, 0x8ac4, 0x204);
+        chip.execute_command();
+        assert_eq!(chip.v[0xa], 0x2);
+        assert_eq!(chip.v[0xf], 0x1);
+    }
+
+    #[test]
+    fn test_vx_sub_vy() {
+        let mut chip = setup();
+
+        // V[0xc] = 0x03
+        add_cmd(&mut chip, 0x6c03, 0x200);
+        chip.execute_command();
+
+        // V[0xa] = 0xff
+        add_cmd(&mut chip, 0x6aff, 0x202);
+        chip.execute_command();
+
+        // V[0xc] - V[0xa] = 0x253
+        add_cmd(&mut chip, 0x8ca5, 0x204);
+        chip.execute_command();
+        assert_eq!(chip.v[0xc], 4);
+        assert_eq!(chip.v[0xf], 0x0);
     }
 }

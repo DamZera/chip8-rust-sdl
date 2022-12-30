@@ -1,5 +1,5 @@
 [package]
-name = "chip8_dissambler"
+name = "chip8_rust_sdl"
 version = "0.1.0"
 edition = "2021"
 
